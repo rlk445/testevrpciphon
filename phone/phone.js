@@ -81,6 +81,12 @@ function onMsg(m) {
   else if (m.t === 'vr') { vrOn = !!m.on; $('bVR').classList.toggle('on', vrOn); }
 }
 const sendWs = o => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+function startPlay() {
+  rv.muted = false; const p = rv.play();
+  if (p && p.catch) p.catch(() => { rv.muted = true; const p2 = rv.play(); if (p2 && p2.catch) p2.catch(() => {}); say('Toque na tela para ligar o som.'); });
+}
+const unmute = () => { if (!running) return; if (rv.muted) rv.muted = false; const p = rv.play(); if (p && p.catch) p.catch(() => {}); };
+['pointerdown', 'touchstart', 'click'].forEach(ev => document.addEventListener(ev, unmute, { capture: true, passive: true }));
 function closeRtc() { try { if (pc) pc.close(); } catch (e) {} pc = null; dc = null; remote = null; rv.srcObject = null; }
 async function startRtc() {
   closeRtc(); say('Conectando ao jogo…');
@@ -92,7 +98,7 @@ async function startRtc() {
   c.ontrack = e => {
     if (pc !== c) return;
     if (!remote) remote = new MediaStream(); remote.addTrack(e.track); rv.srcObject = remote; rv.muted = false;
-    const p = rv.play(); if (p && p.catch) p.catch(() => say('Toque na tela para ligar o som.'));
+    startPlay();
   };
   c.onconnectionstatechange = () => { if (pc !== c) return; rtcState = c.connectionState; if (rtcState === 'failed') say('A conexão com o PC falhou. Mesmo Wi-Fi? Firewall do Windows em Redes privadas?', true); };
   try {
@@ -102,6 +108,8 @@ async function startRtc() {
 }
 
 // ---------- tela: vídeo simples ou com correção de cabeça (WebGL) ----------
+let vf = 0;
+if (rv.requestVideoFrameCallback) { const cb = () => { newFrame = true; vf++; rv.requestVideoFrameCallback(cb); }; rv.requestVideoFrameCallback(cb); }
 let gl = null, prog = null, tex = null, U = {}, newFrame = true, blackN = 0, frameN = 0;
 const VS = 'attribute vec2 p;varying vec2 uv;void main(){uv=p*0.5+0.5;gl_Position=vec4(p,0.,1.);}';
 const FS = 'precision highp float;varying vec2 uv;uniform sampler2D tex;uniform mat3 R;uniform vec2 tn;uniform float vr;' +
@@ -123,7 +131,6 @@ function initGL() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); gl.uniform1i(U.tex, 0);
-    if (rv.requestVideoFrameCallback) { const cb = () => { newFrame = true; rv.requestVideoFrameCallback(cb); }; rv.requestVideoFrameCallback(cb); }
     return true;
   } catch (e) { gl = null; return false; }
 }
@@ -185,13 +192,14 @@ requestAnimationFrame(draw); setLat(lat); $('bWp').classList.toggle('on', warp);
 // ---------- diagnóstico e estado ----------
 let lastFrames = 0, lastT = performance.now(), fps = 0;
 setInterval(() => {
-  const q = rv.getVideoPlaybackQuality ? rv.getVideoPlaybackQuality() : null, frames = q ? q.totalVideoFrames : 0, now = performance.now();
+  const q = rv.getVideoPlaybackQuality ? rv.getVideoPlaybackQuality() : null, frames = Math.max(q ? q.totalVideoFrames : 0, vf), now = performance.now();
   fps = Math.round((frames - lastFrames) * 1000 / Math.max(now - lastT, 1)); lastFrames = frames; lastT = now;
   $('stat').textContent = fps + ' fps';
-  const live = running && frames > 5;
+  if (running && rv.srcObject && rv.paused) { rv.muted = true; const pp = rv.play(); if (pp && pp.catch) pp.catch(() => {}); }   // parado? força o play sem som (o iOS sempre permite)
+  const live = running && rv.videoWidth > 0;
   if (live && $('intro').style.display !== 'none') $('intro').style.display = 'none';
   if (running && !live && $('intro').style.display === 'none') $('intro').style.display = '';
-  $('dbg').textContent = (status && now - statusT < 6000 ? status + '\n' : '') + 'ws ' + (ws ? ['conectando', 'aberto', 'fechando', 'fechado'][ws.readyState] : '-') + '  pc ' + rtcState + '  sensor ' + (hist.length ? 'ok' : 'não') +
+  $('dbg').textContent = 'v2 ' + (rv.paused ? 'PARADO ' : 'tocando ') + (rv.muted ? 'sem-som ' : 'com-som ') + '\n' + (status && now - statusT < 6000 ? status + '\n' : '') + 'ws ' + (ws ? ['conectando', 'aberto', 'fechando', 'fechado'][ws.readyState] : '-') + '  pc ' + rtcState + '  sensor ' + (hist.length ? 'ok' : 'não') +
     '\nvídeo ' + rv.videoWidth + 'x' + rv.videoHeight + ' quadros ' + frames + (warp ? '  correção ' + lat + 'ms' : '  simples');
   $('dbg').classList.toggle('on', running && (frames < 5 || $('bar').classList.contains('on') || now - statusT < 6000));
 }, 500);
